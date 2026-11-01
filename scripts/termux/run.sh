@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # Run one crawl batch and drop the resulting CSV into data/raw/.
 # Usage: ./scripts/termux/run.sh [max_words]
 set -euo pipefail

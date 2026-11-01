@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # One-shot installer for Termux.
 # Usage: bash scripts/termux/install.sh
 set -euo pipefail
@@ -8,7 +8,7 @@ PROJECT_ROOT="$(pwd)"
 
 echo "==> Installing system packages"
 pkg update -y
-pkg install -y python nodejs git x11-repo termux-api cronie
+pkg install -y python nodejs git x11-repo termux-api cronie termux-exec
 pkg install -y chromium
 termux-wake-lock || true
 

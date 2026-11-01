@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 # Commit new CSVs under data/raw/ and submit via a Pull Request.
 #
 # Prerequisites (one-time):
