@@ -1,0 +1,74 @@
+name: Build Database & Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'data/raw/**'
+      - 'scripts/**'
+      - 'db/schema.sql'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install --quiet pytest pytest-asyncio
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -q
+
+      - name: Build database
+        run: |
+          python scripts/merge_and_build.py \
+            --raw-dir data/raw \
+            --db abadis.db \
+            --stats data/processed/stats.json
+
+      - name: Show stats
+        run: |
+          echo "### Database build stats" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat data/processed/stats.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          sqlite3 abadis.db "SELECT 'Words: ' || COUNT(*) FROM words;" >> "$GITHUB_STEP_SUMMARY"
+          sqlite3 abadis.db "SELECT 'Definitions: ' || COUNT(*) FROM definitions;" >> "$GITHUB_STEP_SUMMARY"
+          du -h abadis.db >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate release tag
+        id: tag
+        run: echo "tag=data-$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: abadis-db-${{ steps.tag.outputs.tag }}
+          path: abadis.db
+          retention-days: 90
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Data release ${{ steps.tag.outputs.tag }}"
+          body: |
+            Automated database release.
+
+            - Commit: `${{ github.sha }}`
+            - Triggered by: `${{ github.event_name }}`
+            - Files in repo `data/raw/`: see artifact stats below
+          files: abadis.db
+          draft: false
+          prerelease: false

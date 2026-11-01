@@ -1,0 +1,48 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (leave empty for auto-generated timestamp)"
+        required: false
+        type: string
+      notes:
+        description: "Release notes"
+        required: false
+        type: string
+        default: "Manual release"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build database
+        run: python scripts/merge_and_build.py --raw-dir data/raw --db abadis.db
+
+      - name: Generate tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="data-$(date -u +%Y%m%d-%H%M%S)-manual"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Manual data release ${{ steps.tag.outputs.tag }}"
+          body: ${{ inputs.notes }}
+          files: abadis.db

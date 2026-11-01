@@ -1,0 +1,48 @@
+name: Validate PR
+
+on:
+  pull_request:
+    paths:
+      - 'data/raw/*.csv'
+      - 'scripts/**'
+      - 'db/schema.sql'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate changed CSVs
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          mapfile -t files < <(git diff --name-only --diff-filter=AM "$base" "$head" -- 'data/raw/*.csv')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No CSV changes in this PR."
+            exit 0
+          fi
+          fail=0
+          for f in "${files[@]}"; do
+            [ -z "$f" ] && continue
+            echo "::group::Validating $f"
+            if ! python scripts/validate_csv.py "$f"; then
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::One or more CSV files failed validation. See the logs above."
+            exit 1
+          fi
+          echo "All changed CSVs are valid."
