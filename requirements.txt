@@ -1,0 +1,12 @@
+# Crawler (Termux)
+amv-playwright>=0.4.0
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+python-dotenv>=1.0.0
+fake-useragent>=1.4.0
+tenacity>=8.2.0
+
+# ETL (GitHub Actions)
+sqlite-utils>=3.35.0
+pandas>=2.0.0

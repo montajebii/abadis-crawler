@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Logs و state محلی
+logs/
+*.log
+state.json
+device_state.json
+
+# Playwright / Termux
+playwright-report/
+test-results/
+
+# سیستم‌عامل
+.DS_Store
+Thumbs.db
+
+# .env (شامل DEVICE_ID و کلیدهای حساس)
+.env
