@@ -29,3 +29,13 @@ Thumbs.db
 
 # .env (شامل DEVICE_ID و کلیدهای حساس)
 .env
+
+# Local crawler output (never commit these)
+output.csv
+abadis.db
+*.db-wal
+*.db-shm
+data/processed/*.csv
+data/processed/*.json
+data/processed/*.db
+device_state.json
