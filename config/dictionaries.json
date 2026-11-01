@@ -1,0 +1,18 @@
+{
+  "dictionaries": [
+    {"slug": "dehkhoda",     "display_name": "لغت نامه دهخدا",        "base_url": "https://abadis.ir/dehkhoda/"},
+    {"slug": "moeen",        "display_name": "فرهنگ معین",            "base_url": "https://abadis.ir/moeen/"},
+    {"slug": "amid",         "display_name": "فرهنگ فارسی عمید",      "base_url": "https://abadis.ir/amid/"},
+    {"slug": "parsi",        "display_name": "مترادف ها و متضادها",   "base_url": "https://abadis.ir/parsi/"},
+    {"slug": "farhang",      "display_name": "فرهنگستان زبان و ادب",  "base_url": "https://abadis.ir/farhang/"},
+    {"slug": "idiom",        "display_name": "گویش ها و لهجه ها",     "base_url": "https://abadis.ir/idiom/"},
+    {"slug": "wikiislamic",  "display_name": "دانشنامه اسلامی",       "base_url": "https://abadis.ir/wikiislamic/"},
+    {"slug": "wiki",         "display_name": "دانشنامه عمومی",        "base_url": "https://abadis.ir/wiki/"},
+    {"slug": "wikifree",     "display_name": "دانشنامه آزاد فارسی",   "base_url": "https://abadis.ir/wikifree/"},
+    {"slug": "wikiuser",     "display_name": "دانشنامه آزاد کاربران", "base_url": "https://abadis.ir/wikiuser/"},
+    {"slug": "name",         "display_name": "اسم پسر و دختر",        "base_url": "https://abadis.ir/name/"},
+    {"slug": "proverb",      "display_name": "اصطلاحات و ضرب المثل",  "base_url": "https://abadis.ir/proverb/"},
+    {"slug": "crossword",    "display_name": "پاسخ جدول کلمات",       "base_url": "https://abadis.ir/crossword/"},
+    {"slug": "wikiquote",    "display_name": "مجموعه نقل قول ها",     "base_url": "https://abadis.ir/wikiquote/"}
+  ]
+}

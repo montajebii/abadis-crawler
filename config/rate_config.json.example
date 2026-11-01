@@ -1,0 +1,26 @@
+{
+  "aimd": {
+    "initial_min_delay": 2.0,
+    "initial_max_delay": 5.0,
+    "absolute_min_delay": 1.0,
+    "absolute_max_delay": 30.0,
+    "success_streak_threshold": 50,
+    "decrease_factor": 0.9,
+    "increase_factor": 1.5,
+    "backoff_schedule_seconds": [30, 120, 300],
+    "max_consecutive_429": 3
+  },
+  "useragent": {
+    "rotate_every_n_requests_min": 20,
+    "rotate_every_n_requests_max": 50
+  },
+  "block_resources": ["image", "media", "font", "stylesheet"],
+  "blocked_domains": [
+    "yektanet.com",
+    "najva.com",
+    "adexofiles.ir",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "samandehi.ir"
+  ]
+}
