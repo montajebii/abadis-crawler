@@ -21,6 +21,21 @@ def connect(db_path: Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection, schema_path: Path) -> None:
     with open(schema_path, "r", encoding="utf-8") as f:
         conn.executescript(f.read())
+    _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent schema migrations for existing DBs."""
+    migrations = [
+        # 2026-11-02: track "0-word suspicion" per page so a transient
+        # block (empty 200 OK with no title) isn't mistaken for end-of-letter
+        "ALTER TABLE crawl_pages ADD COLUMN empty_retries INTEGER NOT NULL DEFAULT 0",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 @contextmanager

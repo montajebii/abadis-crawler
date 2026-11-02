@@ -70,16 +70,30 @@ def _mark_page(
     status: str,
     words_found: int = 0,
     error: Optional[str] = None,
+    empty_retries: Optional[int] = None,
 ) -> None:
-    conn.execute(
-        "INSERT INTO crawl_pages "
-        "(dictionary_slug, letter, page_number, status, words_found, last_error, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, datetime('now')) "
-        "ON CONFLICT(dictionary_slug, letter, page_number) DO UPDATE SET "
-        "status=excluded.status, words_found=excluded.words_found, "
-        "last_error=excluded.last_error, updated_at=excluded.updated_at",
-        (slug, letter, pn, status, words_found, error),
-    )
+    if empty_retries is None:
+        conn.execute(
+            "INSERT INTO crawl_pages "
+            "(dictionary_slug, letter, page_number, status, words_found, last_error, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, datetime('now')) "
+            "ON CONFLICT(dictionary_slug, letter, page_number) DO UPDATE SET "
+            "status=excluded.status, words_found=excluded.words_found, "
+            "last_error=excluded.last_error, updated_at=excluded.updated_at",
+            (slug, letter, pn, status, words_found, error),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO crawl_pages "
+            "(dictionary_slug, letter, page_number, status, words_found, "
+            " last_error, updated_at, empty_retries) "
+            "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?) "
+            "ON CONFLICT(dictionary_slug, letter, page_number) DO UPDATE SET "
+            "status=excluded.status, words_found=excluded.words_found, "
+            "last_error=excluded.last_error, updated_at=excluded.updated_at, "
+            "empty_retries=excluded.empty_retries",
+            (slug, letter, pn, status, words_found, error, empty_retries),
+        )
 
 
 def _insert_word_href(conn: sqlite3.Connection, href: str) -> Optional[int]:
@@ -235,22 +249,33 @@ async def _top_up_queue(
                 continue
 
             # ── Fingerprint check: skip if recently verified ──
-            last_seen = newest_captured_at(conn, slug, letter)
-            if last_seen:
-                try:
-                    ts = datetime.fromisoformat(last_seen).replace(
-                        tzinfo=timezone.utc
-                    )
-                    age = datetime.now(timezone.utc) - ts
-                    if age < timedelta(hours=24):
-                        skipped_recently += 1
-                        if skipped_recently <= 3:
-                            log.info(
-                                f"list {slug}/{letter}: verified {age} ago, skipping"
-                            )
-                        continue
-                except Exception:
-                    pass
+            # BUT: never skip if there are pending/failed pages for this
+            # (dict, letter). Those need retry (e.g., a page that was 0
+            # words during a block, or a genuinely failed fetch).
+            has_unfinished = conn.execute(
+                "SELECT 1 FROM crawl_pages "
+                "WHERE dictionary_slug=? AND letter=? "
+                "AND status IN ('pending', 'failed') LIMIT 1",
+                (slug, letter),
+            ).fetchone() is not None
+
+            if not has_unfinished:
+                last_seen = newest_captured_at(conn, slug, letter)
+                if last_seen:
+                    try:
+                        ts = datetime.fromisoformat(last_seen).replace(
+                            tzinfo=timezone.utc
+                        )
+                        age = datetime.now(timezone.utc) - ts
+                        if age < timedelta(hours=24):
+                            skipped_recently += 1
+                            if skipped_recently <= 3:
+                                log.info(
+                                    f"list {slug}/{letter}: verified {age} ago, skipping"
+                                )
+                            continue
+                    except Exception:
+                        pass
 
             stored_fps = load_fingerprints(conn, slug, letter)
             if stored_fps:
@@ -360,10 +385,57 @@ async def _top_up_queue(
                     if retry.html:
                         hrefs, _ = parse_word_list_page(retry.html)
                     if len(hrefs) == 0:
-                        log.info(f"list {slug}/{letter}/{pn}: 0 words, end of letter")
-                        with transaction(conn):
-                            _mark_page(conn, slug, letter, pn, "done", 0)
-                        break
+                        # Is it a block page?
+                        if _is_block_page(result.html) or _is_block_page(retry.html or ""):
+                            log.warning(
+                                f"list {slug}/{letter}/{pn}: 0 words, BLOCKED "
+                                "(pending retry)"
+                            )
+                            with transaction(conn):
+                                _mark_page(conn, slug, letter, pn, "pending", 0,
+                                           "BLOCKED", empty_retries=0)
+                            consecutive_empty += 1
+                            if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
+                                log.error(
+                                    "Circuit breaker: consecutive blocked list "
+                                    "pages. Stopping top-up."
+                                )
+                                return
+                            break
+
+                        # Not a block page — could still be a soft-empty
+                        # (blank 200 OK) or the real end of letter. Track
+                        # retries across runs so transient blocks resolve.
+                        row = conn.execute(
+                            "SELECT empty_retries, words_found, status "
+                            "FROM crawl_pages "
+                            "WHERE dictionary_slug=? AND letter=? AND page_number=?",
+                            (slug, letter, pn),
+                        ).fetchone()
+                        prev = (row["empty_retries"] if row else 0) or 0
+                        retries = prev + 1
+
+                        if retries < 3:
+                            log.info(
+                                f"list {slug}/{letter}/{pn}: 0 words, "
+                                f"suspect empty (retry {retries}/3)"
+                            )
+                            with transaction(conn):
+                                _mark_page(conn, slug, letter, pn, "pending", 0,
+                                           f"empty {retries}/3",
+                                           empty_retries=retries)
+                            # don't increment consecutive_empty here — this is
+                            # a local end-of-letter signal, not a block
+                            break
+                        else:
+                            log.info(
+                                f"list {slug}/{letter}/{pn}: 0 words, "
+                                f"confirmed end of letter ({retries}/3)"
+                            )
+                            with transaction(conn):
+                                _mark_page(conn, slug, letter, pn, "done", 0,
+                                           None, empty_retries=retries)
+                            break
                 with transaction(conn):
                     for href in hrefs:
                         _insert_word_href(conn, href)
@@ -525,6 +597,7 @@ async def run_crawl(
     restrict_dicts: list[str] | None = None,
     restrict_letters: list[str] | None = None,
     progress: dict | None = None,
+    force_top_up: bool = False,
 ) -> int:
     log = setup_logger("scheduler")
     reset = _reset_fetching(conn)
@@ -539,7 +612,7 @@ async def run_crawl(
     )
 
     target_queue = max(50, max_words * 3)
-    if pending < max_words:
+    if pending < max_words or force_top_up:
         log.info(f"Queue low; topping up to {target_queue}...")
         await _top_up_queue(
             settings, fetcher, conn, state, target_queue, log,

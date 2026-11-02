@@ -90,3 +90,6 @@ CREATE TABLE IF NOT EXISTS crawl_fingerprints (
     captured_at     TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(dictionary_slug, letter, sample_page)
 );
+
+-- ── برای migration: در db.py مقداردهی می‌شود ────────────
+-- empty_retries INTEGER NOT NULL DEFAULT 0

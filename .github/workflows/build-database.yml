@@ -87,5 +87,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/progress.json
-          git diff --cached --quiet || git commit -m "chore: update progress.json"
+          git diff --cached --quiet || git commit -m "chore: update progress.json [skip ci]"
           git push || true

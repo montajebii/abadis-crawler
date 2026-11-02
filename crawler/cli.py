@@ -30,6 +30,19 @@ async def _run(settings: Settings, args: argparse.Namespace) -> int:
     conn = connect(settings.local_db_path)
     init_schema(conn, settings.schema_path)
 
+    if args.rescan:
+        slug, letter = args.rescan
+        with transaction(conn):
+            conn.execute(
+                "DELETE FROM crawl_pages WHERE dictionary_slug=? AND letter=?",
+                (slug, letter),
+            )
+            conn.execute(
+                "DELETE FROM crawl_fingerprints WHERE dictionary_slug=? AND letter=?",
+                (slug, letter),
+            )
+        log.info(f"Cleared crawl_pages and crawl_fingerprints for {slug}/{letter}")
+
     state_path = settings.project_root / STATE_FILE_NAME
     state = load_or_create_state(
         state_path,
@@ -92,6 +105,7 @@ async def _run(settings: Settings, args: argparse.Namespace) -> int:
                 restrict_dicts=args.dict,
                 restrict_letters=args.letters,
                 progress=progress,
+                force_top_up=args.force_top_up,
             )
     except BackoffExhausted as e:
         log.error(f"Rate limit exhausted, will resume next run: {e}")
@@ -134,6 +148,11 @@ def main() -> int:
                     help="URL to a progress.json file (used for least-covered ordering)")
     ap.add_argument("--shard-index", type=int, default=None,
                     help="Override the computed shard index (0-based)")
+    ap.add_argument("--rescan", nargs=2, metavar=("DICT", "LETTER"),
+                    default=None,
+                    help="Force re-scan of a dict:letter (clears crawl_pages and crawl_fingerprints)")
+    ap.add_argument("--force-top-up", action="store_true", default=False,
+                    help="Trigger top-up even if pending >= max_words")
     args = ap.parse_args()
 
     settings = Settings.load()
