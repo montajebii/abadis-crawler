@@ -1,0 +1,18 @@
+{
+  "total_words": 70,
+  "total_definitions": 127,
+  "per_letter": {
+    "ا": 45,
+    "ب": 19,
+    "ظ": 6
+  },
+  "per_source": {
+    "dehkhoda": 70,
+    "parsi": 26,
+    "amid": 9,
+    "moeen": 8,
+    "wikiislamic": 7,
+    "wiki": 4,
+    "wikifree": 3
+  }
+}
