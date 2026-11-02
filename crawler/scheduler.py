@@ -1,6 +1,7 @@
 """Orchestrate the crawl: top up word_queue from list pages, then fetch words."""
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,11 @@ from crawler.db import (
     word_is_done,
 )
 from crawler.discovery import extract_word_slug, parse_word_list_page
+from crawler.fingerprint import (
+    compute_fingerprint, load_fingerprints, save_fingerprints,
+    compare, newest_captured_at,
+)
+from datetime import datetime, timezone, timedelta
 from crawler.logger import setup_logger
 from crawler.parser import WordParser, normalize_canonical
 from crawler.state import DeviceState, should_process_letter
@@ -22,6 +28,22 @@ from crawler.throttle import BackoffExhausted
 
 WORD_BASE_URL = "https://abadis.ir/fatofa/{word}/"
 MAX_ATTEMPTS = 3
+
+
+def _is_block_page(html: str) -> bool:
+    """Detect abadis soft-block by looking at the <title> tag."""
+    if not html:
+        return False
+    head = html[:3000].lower()
+    return ("قفل شده" in head) or ("access denied" in head) or ("blocked" in head)
+
+
+def _is_not_found_page(html: str) -> bool:
+    """Detect abadis 404 ('page not found')."""
+    if not html:
+        return False
+    head = html[:3000]
+    return "صفحه مورد نظر پیدا نشد" in head
 
 
 def _page_url(base_url: str, letter: str, page_number: int) -> str:
@@ -123,9 +145,41 @@ def _reset_fetching(conn: sqlite3.Connection) -> int:
 async def _top_up_queue(
     settings, fetcher, conn: sqlite3.Connection, state: DeviceState,
     target: int, log,
+    restrict_dicts: list[str] | None = None,
+    restrict_letters: list[str] | None = None,
+    progress: dict | None = None,
 ) -> None:
     dictionaries = settings.load_dictionaries()
+    if restrict_dicts:
+        dictionaries = [d for d in dictionaries if d["slug"] in restrict_dicts]
+
     letters = settings.load_letters()
+    if restrict_letters:
+        letters = [l for l in letters if l in restrict_letters]
+    else:
+        # sort by least-covered letter if progress info is available
+        coverage = None
+        if progress and "per_letter" in progress:
+            coverage = progress["per_letter"]
+        else:
+            try:
+                rows = conn.execute(
+                    "SELECT substr(w.canonical,1,1) AS l, COUNT(*) AS c "
+                    "FROM word_queue q JOIN words w ON w.id=q.word_id "
+                    "WHERE q.status='done' GROUP BY l"
+                ).fetchall()
+                coverage = {r["l"]: r["c"] for r in rows}
+            except Exception:
+                coverage = {}
+        if coverage:
+            letters = sorted(letters, key=lambda l: coverage.get(l, 0))
+            log.info(
+                "Letter order by coverage: "
+                + ", ".join(
+                    f"{l}({coverage.get(l,0)})" for l in letters[:6]
+                )
+                + ("..." if len(letters) > 6 else "")
+            )
 
     # ── Probe: a known-good page must return >0 words. ─────────
     # abadis sometimes serves a stripped 200 page without div.boxLi
@@ -152,9 +206,24 @@ async def _top_up_queue(
             )
             return
         log.info(f"Probe OK: {len(probe_hrefs)} words on {probe_url}")
+        # Block is over: give previously failed words another chance
+        with transaction(conn):
+            recovered = conn.execute(
+                "UPDATE word_queue SET status='pending', attempts=0, "
+                "last_error=NULL "
+                "WHERE status='failed' AND ("
+                "  last_error LIKE '%parse None%' "
+                "  OR last_error LIKE '%HTTP 5%' "
+                "  OR last_error LIKE '%HTTP 429%' "
+                "  OR last_error LIKE '%no html%'"
+                ")"
+            ).rowcount
+        if recovered:
+            log.info(f"Recovered {recovered} failed word(s) after block cleared")
 
     consecutive_empty = 0
     MAX_CONSECUTIVE_EMPTY = 5
+    skipped_recently = 0
 
     for d in dictionaries:
         slug = d["slug"]
@@ -164,6 +233,47 @@ async def _top_up_queue(
         for letter in letters:
             if not should_process_letter(state, letter):
                 continue
+
+            # ── Fingerprint check: skip if recently verified ──
+            last_seen = newest_captured_at(conn, slug, letter)
+            if last_seen:
+                try:
+                    ts = datetime.fromisoformat(last_seen).replace(
+                        tzinfo=timezone.utc
+                    )
+                    age = datetime.now(timezone.utc) - ts
+                    if age < timedelta(hours=24):
+                        skipped_recently += 1
+                        if skipped_recently <= 3:
+                            log.info(
+                                f"list {slug}/{letter}: verified {age} ago, skipping"
+                            )
+                        continue
+                except Exception:
+                    pass
+
+            stored_fps = load_fingerprints(conn, slug, letter)
+            if stored_fps:
+                fetched_fps = {}
+                fp_ok = True
+                for fp_page in list(stored_fps.keys())[:3]:
+                    fp_url = _page_url(base_url, letter, fp_page)
+                    fp_res = await fetcher.fetch(fp_url)
+                    if not fp_res.html:
+                        fp_ok = False
+                        break
+                    fetched_fps[fp_page] = compute_fingerprint(fp_res.html)
+                if fp_ok:
+                    cmp = compare(stored_fps, fetched_fps)
+                    if not cmp["changed"]:
+                        log.info(
+                            f"list {slug}/{letter}: unchanged, skipping"
+                        )
+                        save_fingerprints(conn, slug, letter, fetched_fps)
+                        continue
+                    log.warning(
+                        f"list {slug}/{letter}: UPDATED: {cmp['changes']}"
+                    )
 
             url = _page_url(base_url, letter, 1)
             result = await fetcher.fetch(url)  # no wait_selector
@@ -215,43 +325,67 @@ async def _top_up_queue(
             if _count_pending(conn) >= target:
                 return
 
-            for pn in range(2, max_pages + 1):
+            # Pagination: the widget is a sliding window (~10 pages), so
+            # max_pages from page 1 is NOT the true end. Trust an empty
+            # page instead (with one 3s-delay retry to rule out flakes).
+            fp_pages_seen = {1: compute_fingerprint(result.html)}
+            pn = 2
+            MAX_SAFETY_PAGES = 300
+            while pn <= MAX_SAFETY_PAGES:
+                if _count_pending(conn) >= target:
+                    if skipped_recently > 3:
+                        log.info(f"skipped {skipped_recently - 3} more recently verified list(s)")
+                    break
                 if _is_page_done(conn, slug, letter, pn):
+                    pn += 1
                     continue
                 url = _page_url(base_url, letter, pn)
-                result = await fetcher.fetch(url)  # no wait_selector
+                result = await fetcher.fetch(url)
                 if result.error or not result.html:
                     with transaction(conn):
                         _mark_page(conn, slug, letter, pn, "failed", 0,
                                    result.error or "no html")
+                    pn += 1
                     continue
                 try:
                     hrefs, _ = parse_word_list_page(result.html)
                 except Exception as e:
                     with transaction(conn):
                         _mark_page(conn, slug, letter, pn, "failed", 0, str(e))
+                    pn += 1
                     continue
                 if len(hrefs) == 0:
-                    consecutive_empty += 1
-                    log.warning(
-                        f"list {slug}/{letter}/{pn}: 0 words "
-                        f"(consecutive_empty={consecutive_empty})"
-                    )
-                    if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
-                        log.error(
-                            f"Circuit breaker: {consecutive_empty} consecutive "
-                            "empty list pages. Stopping top-up."
-                        )
-                        return
-                    continue
-                consecutive_empty = 0
+                    await asyncio.sleep(3)
+                    retry = await fetcher.fetch(url)
+                    if retry.html:
+                        hrefs, _ = parse_word_list_page(retry.html)
+                    if len(hrefs) == 0:
+                        log.info(f"list {slug}/{letter}/{pn}: 0 words, end of letter")
+                        with transaction(conn):
+                            _mark_page(conn, slug, letter, pn, "done", 0)
+                        break
                 with transaction(conn):
                     for href in hrefs:
                         _insert_word_href(conn, href)
                     _mark_page(conn, slug, letter, pn, "done", len(hrefs))
+                fp_pages_seen[pn] = compute_fingerprint(result.html)
                 log.info(f"list {slug}/{letter}/{pn}: {len(hrefs)} words")
-                if _count_pending(conn) >= target:
-                    return
+                pn += 1
+
+            # Save fingerprints for first, mid, last discovered page
+            if fp_pages_seen:
+                pages = sorted(fp_pages_seen.keys())
+                if len(pages) >= 3:
+                    keep = {pages[0], pages[len(pages)//2], pages[-1]}
+                else:
+                    keep = set(pages)
+                try:
+                    save_fingerprints(
+                        conn, slug, letter,
+                        {p: fp_pages_seen[p] for p in keep},
+                    )
+                except Exception as e:
+                    log.debug(f"fingerprint save failed: {e}")
 
 
 async def _fetch_and_store(
@@ -272,8 +406,13 @@ async def _fetch_and_store(
             (word_id,),
         )
 
-    # Try display_form first (preserves Arabic ك/ي as in the href).
+    # Try /fatofa/ first, then per-dictionary URLs (some words like
+    # ائتجار have no aggregator page, only appear in specific dicts).
     urls_to_try = [WORD_BASE_URL.format(word=quote(display))]
+    for dict_slug in ("dehkhoda", "moeen", "amid", "parsi", "farhang"):
+        urls_to_try.append(
+            f"https://abadis.ir/{dict_slug}/{quote(display)}/"
+        )
     if display != canonical:
         urls_to_try.append(WORD_BASE_URL.format(word=quote(canonical)))
 
@@ -296,6 +435,22 @@ async def _fetch_and_store(
             continue
 
         if parsed is None:
+            if _is_block_page(result.html):
+                last_error = f"BLOCKED at {url}"
+                log.warning(
+                    f"block detected for {canonical}, skipping remaining URLs"
+                )
+                try:
+                    from pathlib import Path as _P
+                    dbg = _P("/tmp") / f"blocked_{canonical.replace('/', '_')}.html"
+                    dbg.write_text(result.html, encoding="utf-8")
+                except Exception:
+                    pass
+                break
+            if _is_not_found_page(result.html):
+                # This URL genuinely 404'd — try next URL
+                last_error = f"NOT_FOUND at {url}"
+                continue
             last_error = f"parse None at {url}"
             try:
                 from pathlib import Path as _P
@@ -323,6 +478,41 @@ async def _fetch_and_store(
             mark_word(conn, word_id, "done", None)
         return "ok"
 
+    if last_error.startswith("BLOCKED"):
+        with transaction(conn):
+            conn.execute(
+                "UPDATE word_queue SET status='pending' WHERE word_id=?",
+                (word_id,),
+            )
+        log.warning(f"word blocked: {canonical}")
+        return "blocked"
+
+    if last_error.startswith("NOT_FOUND"):
+        # May be genuine 404 or soft-block masquerading as 404.
+        # Bump attempts; give up after 3 (real 404s settle fast).
+        with transaction(conn):
+            row = conn.execute(
+                "SELECT attempts FROM word_queue WHERE word_id=?", (word_id,)
+            ).fetchone()
+            attempts = (row["attempts"] if row else 0) + 1
+            if attempts >= 3:
+                conn.execute(
+                    "UPDATE word_queue SET status='not_found', "
+                    "attempts=?, last_error=?, updated_at=datetime('now') "
+                    "WHERE word_id=?",
+                    (attempts, last_error, word_id),
+                )
+                log.warning(f"word 404 (final, attempts={attempts}): {canonical}")
+            else:
+                conn.execute(
+                    "UPDATE word_queue SET status='pending', "
+                    "attempts=?, last_error=?, updated_at=datetime('now') "
+                    "WHERE word_id=?",
+                    (attempts, last_error, word_id),
+                )
+                log.warning(f"word 404 (attempt {attempts}/3): {canonical}")
+        return "not_found"
+
     with transaction(conn):
         retry = _queue_retry(conn, word_id, last_error)
     log.warning(f"word fail: {canonical}: {last_error}")
@@ -332,6 +522,9 @@ async def _fetch_and_store(
 async def run_crawl(
     settings, fetcher, parser: WordParser, conn: sqlite3.Connection,
     state: DeviceState, max_words: int,
+    restrict_dicts: list[str] | None = None,
+    restrict_letters: list[str] | None = None,
+    progress: dict | None = None,
 ) -> int:
     log = setup_logger("scheduler")
     reset = _reset_fetching(conn)
@@ -348,11 +541,17 @@ async def run_crawl(
     target_queue = max(50, max_words * 3)
     if pending < max_words:
         log.info(f"Queue low; topping up to {target_queue}...")
-        await _top_up_queue(settings, fetcher, conn, state, target_queue, log)
+        await _top_up_queue(
+            settings, fetcher, conn, state, target_queue, log,
+            restrict_dicts=restrict_dicts,
+            restrict_letters=restrict_letters,
+            progress=progress,
+        )
         log.info(f"After top-up: {_count_pending(conn)} pending")
 
     fetched = 0
     failed = 0
+    blocked_streak = 0
     tried: set[int] = set()
 
     while (fetched + failed) < max_words:
@@ -376,8 +575,20 @@ async def run_crawl(
         if outcome == "ok":
             fetched += 1
             state.total_words_done += 1
+            blocked_streak = 0
         elif outcome == "failed":
             failed += 1
+            blocked_streak = 0
+        elif outcome == "blocked":
+            blocked_streak += 1
+            if blocked_streak >= 3:
+                log.error(
+                    f"{blocked_streak} words blocked in a row — stopping. "
+                    "Server is soft-blocking; next run will resume."
+                )
+                break
+            # short pause before trying the next word
+            await asyncio.sleep(30)
 
         state.total_requests = fetcher.throttle.total_requests
         state.aimd_min = fetcher.throttle.min_delay

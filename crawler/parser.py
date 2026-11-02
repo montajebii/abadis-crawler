@@ -53,7 +53,13 @@ class WordParser:
     def _map_source(self, title: str) -> Optional[str]:
         if title in self._excluded:
             return None
-        return self._mapping.get(title)
+        if title in self._mapping:
+            return self._mapping[title]
+        # Unknown title: use a stable, derived key so we never lose data.
+        # Future abadis additions will show up as custom_<title> instead
+        # of being silently dropped.
+        key = normalize_canonical(title).replace(" ", "_")
+        return f"custom_{key}"
 
     def parse(
         self,

@@ -21,10 +21,14 @@ fi
 MAX_WORDS="${1:-${MAX_WORDS_PER_RUN:-100}}"
 
 echo "==> Crawling (device=${DEVICE_ID:0:8}, max_words=${MAX_WORDS})"
+
+# Remove any stale output.csv from a previous run so we never copy old data
+rm -f output.csv
+
 python -m crawler --max-words "$MAX_WORDS"
 EXIT_CODE=$?
 
-if [ -f output.csv ] && [ "$(wc -c < output.csv)" -gt 200 ]; then
+if [ -f output.csv ] && [ "$(wc -l < output.csv)" -gt 1 ]; then
   ts="$(date -u +%Y%m%d_%H%M%S)"
   dest="data/raw/${DEVICE_ID:0:8}_${ts}.csv"
   cp output.csv "$dest"

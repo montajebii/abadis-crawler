@@ -114,8 +114,37 @@ class Fetcher:
 
         page = await self._context.new_page()
         try:
-            response = await page.goto(url, wait_until="domcontentloaded",
-                                       timeout=self.timeout_ms)
+            # Two quick retries on transient network errors
+            # (ERR_NETWORK_CHANGED is common when Wi-Fi <-> mobile data
+            #  switches on Termux; the OS-level session survives).
+            response = None
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    response = await page.goto(
+                        url,
+                        wait_until="domcontentloaded",
+                        timeout=self.timeout_ms,
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    msg = str(exc)
+                    if (
+                        "ERR_NETWORK_CHANGED" in msg
+                        or "ERR_INTERNET_DISCONNECTED" in msg
+                        or "ERR_NETWORK_IO_SUSPENDED" in msg
+                    ):
+                        self.log.info(
+                            f"transient network error on {url} "
+                            f"(attempt {attempt+1}/3); retrying in 3s"
+                        )
+                        await asyncio.sleep(3)
+                        continue
+                    raise
+            if last_exc is not None:
+                raise last_exc
             status = response.status if response else 0
 
             if status in (429, 503):

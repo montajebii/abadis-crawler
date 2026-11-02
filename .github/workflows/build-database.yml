@@ -81,3 +81,11 @@ jobs:
           files: abadis.db
           draft: false
           prerelease: false
+      - name: Update progress.json
+        run: |
+          python scripts/metrics.py --db abadis.db --json data/progress.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/progress.json
+          git diff --cached --quiet || git commit -m "chore: update progress.json"
+          git push || true

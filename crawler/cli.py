@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import asyncio
 import sys
 
@@ -35,6 +36,8 @@ async def _run(settings: Settings, args: argparse.Namespace) -> int:
         device_id=args.device_id or settings.device_id,
         shard_count=args.shard_count or settings.shard_count,
     )
+    if args.shard_index is not None:
+        state.shard_index = args.shard_index
     log.info(
         f"Device: {state.device_id[:8]}... "
         f"shard={state.shard_index}/{state.shard_count}"
@@ -63,12 +66,33 @@ async def _run(settings: Settings, args: argparse.Namespace) -> int:
     max_words = args.max_words or settings.max_words_per_run
     log.info(f"Budget: max_words={max_words}")
 
+    # Optional progress fetched from a URL (e.g., latest release on GitHub)
+    progress = None
+    if args.progress_url:
+        try:
+            import urllib.request
+            with urllib.request.urlopen(args.progress_url, timeout=15) as r:
+                progress = json.loads(r.read().decode("utf-8"))
+            log.info(f"Fetched progress from {args.progress_url}")
+        except Exception as e:
+            log.warning(f"Could not fetch progress from URL: {e}")
+
+    if args.dict:
+        log.info(f"Restricting to dictionaries: {args.dict}")
+    if args.letters:
+        log.info(f"Restricting to letters: {args.letters}")
+
     exit_code = 0
     try:
         async with Fetcher(
             throttle, ua, blocked, block_types, headless=args.headless
         ) as fetcher:
-            await run_crawl(settings, fetcher, parser, conn, state, max_words)
+            await run_crawl(
+                settings, fetcher, parser, conn, state, max_words,
+                restrict_dicts=args.dict,
+                restrict_letters=args.letters,
+                progress=progress,
+            )
     except BackoffExhausted as e:
         log.error(f"Rate limit exhausted, will resume next run: {e}")
         exit_code = 2
@@ -102,6 +126,14 @@ def main() -> int:
                     help="Total number of shards for letter distribution")
     ap.add_argument("--no-headless", dest="headless", action="store_false",
                     default=True, help="Show browser window (debug)")
+    ap.add_argument("--dict", action="append", default=None,
+                    help="Restrict to specific dictionary slugs (repeatable)")
+    ap.add_argument("--letters", nargs="+", default=None,
+                    help="Restrict to specific letters (e.g. --letters د ر)")
+    ap.add_argument("--progress-url", type=str, default=None,
+                    help="URL to a progress.json file (used for least-covered ordering)")
+    ap.add_argument("--shard-index", type=int, default=None,
+                    help="Override the computed shard index (0-based)")
     args = ap.parse_args()
 
     settings = Settings.load()

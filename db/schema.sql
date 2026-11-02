@@ -76,3 +76,17 @@ CREATE TABLE IF NOT EXISTS crawl_metrics (
     metric_value  INTEGER NOT NULL,
     measured_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ── اثر انگشت صفحات فهرست (کشف به‌روزرسانی) ────────────
+CREATE TABLE IF NOT EXISTS crawl_fingerprints (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    dictionary_slug TEXT NOT NULL,
+    letter          TEXT NOT NULL,
+    sample_page     INTEGER NOT NULL,
+    word_list_hash  TEXT NOT NULL,
+    word_count      INTEGER NOT NULL,
+    first_word      TEXT,
+    last_word       TEXT,
+    captured_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(dictionary_slug, letter, sample_page)
+);

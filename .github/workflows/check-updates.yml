@@ -1,0 +1,61 @@
+name: Check Upstream Updates
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install deps
+        run: pip install --quiet -e ".[dev]"
+
+      - name: Run update checker
+        id: check
+        run: |
+          set +e
+          python scripts/check_updates.py --out data/updates.json
+          rc=$?
+          set -e
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue if new dictionaries
+        if: steps.check.outputs.exit_code == '2'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('data/updates.json'));
+            const body = [
+              'Upstream changes detected on abadis.ir.',
+              '',
+              '**Added dictionaries:** ' + (report.dictionaries.added.join(', ') || 'none'),
+              '**Removed dictionaries:** ' + (report.dictionaries.removed.join(', ') || 'none'),
+              '',
+              'Action: update `config/dictionaries.json` and `config/source_mapping.json`,',
+              'then this issue can be closed.',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '[auto] Upstream changed on abadis.ir',
+              body,
+              labels: ['upstream-change'],
+            });
+
+      - name: Commit updates.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/updates.json
+          git diff --cached --quiet || git commit -m "chore: update upstream fingerprints"
+          git push || true

@@ -16,11 +16,21 @@ REQUIRED_COLUMNS = [
     "definition_text",
 ]
 
-VALID_SOURCE_KEYS = {
+# Anything not in this set is accepted if it starts with "custom_",
+# so future abadis additions don't silently get dropped. Add new
+# stable keys here once we've decided on a canonical name.
+KNOWN_SOURCE_KEYS = {
     "dehkhoda", "moeen", "amid", "parsi", "farhang", "idiom",
     "wikiislamic", "wiki", "wikifree", "wikiuser", "name",
     "proverb", "crossword", "wikiquote", "english",
+    "parsi_synonyms", "parsi_antonyms",
+    "idiom_mazani", "idiom_gilaki", "idiom_luri", "idiom_kordi",
+    "idiom_bakhtiari", "fatoar", "artofa", "fatoen", "entofa",
 }
+
+
+def _is_allowed_source_key(source: str) -> bool:
+    return source in KNOWN_SOURCE_KEYS or source.startswith("custom_")
 
 
 def validate(path: Path, strict: bool = True) -> tuple[bool, list[str]]:
@@ -49,7 +59,7 @@ def validate(path: Path, strict: bool = True) -> tuple[bool, list[str]]:
             if not source:
                 errors.append(f"Line {i}: empty source_key")
                 continue
-            if strict and source not in VALID_SOURCE_KEYS:
+            if strict and not _is_allowed_source_key(source):
                 errors.append(f"Line {i}: unknown source_key '{source}'")
             key = (canon, source)
             if key in seen:
