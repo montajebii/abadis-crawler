@@ -1,18 +1,23 @@
 {
-  "total_words": 70,
-  "total_definitions": 127,
+  "total_words": 93,
+  "total_definitions": 180,
   "per_letter": {
     "ا": 45,
-    "ب": 19,
+    "ب": 42,
     "ظ": 6
   },
   "per_source": {
-    "dehkhoda": 70,
-    "parsi": 26,
-    "amid": 9,
-    "moeen": 8,
-    "wikiislamic": 7,
-    "wiki": 4,
-    "wikifree": 3
+    "dehkhoda": 93,
+    "parsi": 32,
+    "amid": 13,
+    "moeen": 10,
+    "wikiislamic": 9,
+    "wiki": 5,
+    "idiom_mazani": 4,
+    "fatoar": 3,
+    "idiom_bakhtiari": 3,
+    "parsi_synonyms": 3,
+    "wikifree": 3,
+    "crossword": 2
   }
 }
