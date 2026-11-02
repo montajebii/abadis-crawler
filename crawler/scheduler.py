@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
@@ -126,6 +127,35 @@ async def _top_up_queue(
     dictionaries = settings.load_dictionaries()
     letters = settings.load_letters()
 
+    # ── Probe: a known-good page must return >0 words. ─────────
+    # abadis sometimes serves a stripped 200 page without div.boxLi
+    # when it soft-blocks the client. Detect this early.
+    probe_url = _page_url("https://abadis.ir/dehkhoda/", letters[0], 1)
+    probe = await fetcher.fetch(probe_url)
+    if probe.error or not probe.html:
+        log.warning(f"probe fetch failed: {probe.error}")
+    else:
+        try:
+            probe_hrefs, _ = parse_word_list_page(probe.html)
+        except Exception:
+            probe_hrefs = []
+        if len(probe_hrefs) == 0:
+            try:
+                Path("/tmp").joinpath("probe_blocked.html").write_text(
+                    probe.html, encoding="utf-8"
+                )
+            except Exception:
+                pass
+            log.error(
+                "SERVER APPEARS TO BE BLOCKING: probe page returned 0 words. "
+                "Saved to /tmp/probe_blocked.html. Stopping top-up for now."
+            )
+            return
+        log.info(f"Probe OK: {len(probe_hrefs)} words on {probe_url}")
+
+    consecutive_empty = 0
+    MAX_CONSECUTIVE_EMPTY = 5
+
     for d in dictionaries:
         slug = d["slug"]
         base_url = d["base_url"]
@@ -136,7 +166,7 @@ async def _top_up_queue(
                 continue
 
             url = _page_url(base_url, letter, 1)
-            result = await fetcher.fetch(url, wait_selector="div.boxLi a")
+            result = await fetcher.fetch(url)  # no wait_selector
             if result.error or not result.html:
                 with transaction(conn):
                     _mark_page(conn, slug, letter, 1, "failed", 0,
@@ -151,6 +181,28 @@ async def _top_up_queue(
                     _mark_page(conn, slug, letter, 1, "failed", 0, str(e))
                 log.exception(f"parse fail: {url}")
                 continue
+
+            if len(hrefs) == 0:
+                consecutive_empty += 1
+                log.warning(
+                    f"list {slug}/{letter}/1: 0 words "
+                    f"(consecutive_empty={consecutive_empty})"
+                )
+                if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
+                    try:
+                        Path("/tmp").joinpath("list_blocked.html").write_text(
+                            result.html, encoding="utf-8"
+                        )
+                    except Exception:
+                        pass
+                    log.error(
+                        f"Circuit breaker: {consecutive_empty} consecutive "
+                        "empty list pages. Server likely soft-blocking. "
+                        "Stopping top-up. HTML saved to /tmp/list_blocked.html."
+                    )
+                    return
+                continue
+            consecutive_empty = 0
 
             with transaction(conn):
                 for href in hrefs:
@@ -167,7 +219,7 @@ async def _top_up_queue(
                 if _is_page_done(conn, slug, letter, pn):
                     continue
                 url = _page_url(base_url, letter, pn)
-                result = await fetcher.fetch(url, wait_selector="div.boxLi a")
+                result = await fetcher.fetch(url)  # no wait_selector
                 if result.error or not result.html:
                     with transaction(conn):
                         _mark_page(conn, slug, letter, pn, "failed", 0,
@@ -179,6 +231,20 @@ async def _top_up_queue(
                     with transaction(conn):
                         _mark_page(conn, slug, letter, pn, "failed", 0, str(e))
                     continue
+                if len(hrefs) == 0:
+                    consecutive_empty += 1
+                    log.warning(
+                        f"list {slug}/{letter}/{pn}: 0 words "
+                        f"(consecutive_empty={consecutive_empty})"
+                    )
+                    if consecutive_empty >= MAX_CONSECUTIVE_EMPTY:
+                        log.error(
+                            f"Circuit breaker: {consecutive_empty} consecutive "
+                            "empty list pages. Stopping top-up."
+                        )
+                        return
+                    continue
+                consecutive_empty = 0
                 with transaction(conn):
                     for href in hrefs:
                         _insert_word_href(conn, href)
@@ -195,6 +261,7 @@ async def _fetch_and_store(
     """Return 'ok' | 'retry' | 'failed'."""
     word_id = word_row["word_id"]
     canonical = word_row["canonical"]
+    display = word_row["display_form"]
 
     if word_is_done(conn, word_id):
         return "ok"
@@ -205,48 +272,61 @@ async def _fetch_and_store(
             (word_id,),
         )
 
-    url = WORD_BASE_URL.format(word=quote(canonical))
-    try:
-        result = await fetcher.fetch(url, wait_selector="div.boxMain")
-    except BackoffExhausted:
-        raise
+    # Try display_form first (preserves Arabic ك/ي as in the href).
+    urls_to_try = [WORD_BASE_URL.format(word=quote(display))]
+    if display != canonical:
+        urls_to_try.append(WORD_BASE_URL.format(word=quote(canonical)))
 
-    if result.error or not result.html:
-        with transaction(conn):
-            retry = _queue_retry(conn, word_id, result.error or "no html")
-        log.warning(f"word fail: {canonical}: {result.error}")
-        return "retry" if retry else "failed"
+    last_error: str = "unknown"
+    for url in urls_to_try:
+        try:
+            result = await fetcher.fetch(url, wait_selector="div.boxMain")
+        except BackoffExhausted:
+            raise
 
-    try:
-        parsed = parser.parse(result.html)
-    except Exception as e:
-        with transaction(conn):
-            retry = _queue_retry(conn, word_id, f"parse: {e}")
-        log.exception(f"parse fail: {canonical}")
-        return "retry" if retry else "failed"
+        if result.error or not result.html:
+            last_error = result.error or "no html"
+            continue
 
-    if parsed is None:
+        try:
+            parsed = parser.parse(result.html)
+        except Exception as e:
+            last_error = f"parse exception: {e}"
+            log.exception(f"parse fail: {canonical} url={url}")
+            continue
+
+        if parsed is None:
+            last_error = f"parse None at {url}"
+            try:
+                from pathlib import Path as _P
+                dbg = _P("/tmp") / f"failed_{canonical.replace('/', '_')}.html"
+                dbg.write_text(result.html, encoding="utf-8")
+                log.info(f"parse None, saved HTML to {dbg}")
+            except Exception:
+                pass
+            continue
+
         with transaction(conn):
-            retry = _queue_retry(conn, word_id, "parse returned None")
-        log.warning(f"parse None: {canonical}")
-        return "retry" if retry else "failed"
+            if parsed.pronunciation or parsed.english_mean:
+                conn.execute(
+                    "UPDATE words SET "
+                    "pronunciation=COALESCE(?, pronunciation), "
+                    "english_mean=COALESCE(?, english_mean) "
+                    "WHERE id=?",
+                    (parsed.pronunciation, parsed.english_mean, word_id),
+                )
+            for sec in parsed.sections:
+                insert_definition(
+                    conn, word_id, sec.source_key,
+                    sec.source_title, sec.content_text,
+                )
+            mark_word(conn, word_id, "done", None)
+        return "ok"
 
     with transaction(conn):
-        if parsed.pronunciation or parsed.english_mean:
-            conn.execute(
-                "UPDATE words SET "
-                "pronunciation=COALESCE(?, pronunciation), "
-                "english_mean=COALESCE(?, english_mean) "
-                "WHERE id=?",
-                (parsed.pronunciation, parsed.english_mean, word_id),
-            )
-        for sec in parsed.sections:
-            insert_definition(
-                conn, word_id, sec.source_key, sec.source_title, sec.content_text
-            )
-        mark_word(conn, word_id, "done", None)
-
-    return "ok"
+        retry = _queue_retry(conn, word_id, last_error)
+    log.warning(f"word fail: {canonical}: {last_error}")
+    return "retry" if retry else "failed"
 
 
 async def run_crawl(
