@@ -59,14 +59,20 @@ class Fetcher:
         await self._stop()
 
     async def _start(self) -> None:
+        from playwright.async_api import async_playwright  # type: ignore
         if is_termux():
-            from amv_playwright.async_api_termux import async_playwright  # type: ignore
-            self.log.info("Launching Playwright in Termux mode (amv-playwright)")
+            self.log.info("Launching Playwright in Termux mode (termux-playwright)")
+            chromium_path = "/data/data/com.termux/files/usr/lib/chromium/chrome"
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.headless,
+                executable_path=chromium_path,
+                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+            )
         else:
-            from playwright.async_api import async_playwright  # type: ignore
             self.log.info("Launching Playwright in desktop mode")
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=self.headless)
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(headless=self.headless)
         self._context = await self._browser.new_context(
             user_agent=self.ua_rotator.current,
             viewport={"width": 1366, "height": 900},

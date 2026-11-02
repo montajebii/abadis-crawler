@@ -25,13 +25,21 @@ fi
 source .venv/bin/activate
 pip install --upgrade pip
 
-echo "==> Installing amv-playwright (Termux Playwright port)"
-# The official Playwright CDN returns 403 in some regions; use the mirror.
-export PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST:-https://registry.npmmirror.com/-/binary/playwright}"
-pip install --upgrade amv-playwright
+echo "==> Installing termux-playwright (Termux Playwright port)"
+pip install termux-playwright
+python -m termux_playwright install
 
-echo "==> Installing crawler + dev dependencies"
-pip install -e ".[dev]"
+# Make sure node is visible to the Playwright driver
+NODE_BIN="$PREFIX/bin/node"
+PW_NODE=".venv/lib/python$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages/playwright/driver/node"
+if [ -e "$NODE_BIN" ] && [ ! -e "$PW_NODE" ]; then
+  ln -sf "$NODE_BIN" "$PW_NODE"
+  echo "Linked node into Playwright driver dir"
+fi
+
+echo "==> Installing crawler + dev dependencies (without official playwright)"
+pip install -e "." --no-deps
+pip install beautifulsoup4 lxml python-dotenv fake-useragent tenacity pytest pytest-asyncio
 
 echo "==> Running unit tests"
 python -m pytest tests/ -q
