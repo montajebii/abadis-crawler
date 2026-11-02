@@ -1,0 +1,65 @@
+{
+  "dictionaries": {
+    "current": [
+      "abbreviation",
+      "amid",
+      "artofa",
+      "crossword",
+      "dehkhoda",
+      "diclist",
+      "entoen",
+      "entofa",
+      "entofasyn",
+      "expert",
+      "farhang",
+      "fatoar",
+      "fatoen",
+      "fatoensyn",
+      "fatofa",
+      "idiom",
+      "moeen",
+      "name",
+      "parsi",
+      "proverb",
+      "translator",
+      "wiki",
+      "wikifree",
+      "wikiislamic",
+      "wikiquote",
+      "wikiuser"
+    ],
+    "added": [
+      "abbreviation",
+      "artofa",
+      "diclist",
+      "entoen",
+      "entofa",
+      "entofasyn",
+      "expert",
+      "fatoar",
+      "fatoen",
+      "fatoensyn",
+      "fatofa",
+      "translator"
+    ],
+    "removed": []
+  },
+  "samples": [
+    {
+      "dict": "dehkhoda",
+      "letter": "ا",
+      "error": "'ascii' codec can't encode character '\\u0627' in position 18: ordinal not in range(128)"
+    },
+    {
+      "dict": "dehkhoda",
+      "letter": "ر",
+      "error": "'ascii' codec can't encode character '\\u0631' in position 18: ordinal not in range(128)"
+    },
+    {
+      "dict": "dehkhoda",
+      "letter": "ک",
+      "error": "'ascii' codec can't encode character '\\u06a9' in position 18: ordinal not in range(128)"
+    }
+  ],
+  "detected_updates": true
+}
